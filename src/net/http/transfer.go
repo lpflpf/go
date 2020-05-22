@@ -61,6 +61,7 @@ type transferWriter struct {
 	Body             io.Reader
 	BodyCloser       io.Closer
 	ResponseToHEAD   bool
+
 	ContentLength    int64 // -1 means unknown, 0 means exactly none
 	Close            bool
 	TransferEncoding []string
@@ -340,12 +341,13 @@ func (t *transferWriter) writeBody(w io.Writer) error {
 	// *os.File.
 	if t.Body != nil {
 		var body = t.unwrapBody()
+		// 对于 chunked 请求特殊处理
 		if chunked(t.TransferEncoding) {
 			if bw, ok := w.(*bufio.Writer); ok && !t.IsResponse {
 				w = &internal.FlushAfterChunkWriter{Writer: bw}
 			}
 			cw := internal.NewChunkedWriter(w)
-			_, err = t.doBodyCopy(cw, body)
+			_, err = t.doBodyCopy(cw, body)  // 数据拷贝
 			if err == nil {
 				err = cw.Close()
 			}
@@ -396,6 +398,7 @@ func (t *transferWriter) writeBody(w io.Writer) error {
 // being saved in bodyReadError.
 //
 // This function is only intended for use in writeBody.
+
 func (t *transferWriter) doBodyCopy(dst io.Writer, src io.Reader) (n int64, err error) {
 	n, err = io.Copy(dst, src)
 	if err != nil && err != io.EOF {

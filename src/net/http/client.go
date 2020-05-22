@@ -75,6 +75,7 @@ type Client struct {
 	//
 	// If CheckRedirect is nil, the Client uses its default policy,
 	// which is to stop after 10 consecutive requests.
+	// 可以自己配置的重定向， 比如重定向次数的配置 （默认10次)
 	CheckRedirect func(req *Request, via []*Request) error
 
 	// Jar specifies the cookie jar.
@@ -139,6 +140,8 @@ type RoundTripper interface {
 	// must arrange to wait for the Close call before doing so.
 	//
 	// The Request's URL and Header fields must be initialized.
+
+	// 一个请求，从Request ->  Response  需要支持并发
 	RoundTrip(*Request) (*Response, error)
 }
 
@@ -629,10 +632,9 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 		}
 	}
 	for {
-		// For all but the first request, create the next
-		// request hop and replace req.
+		// 非第一次请求, 对重定向请求的处理
 		if len(reqs) > 0 {
-			loc := resp.Header.Get("Location")
+			loc := resp.Header.Get("Location")   // 从Location 中拿到后续的连接请求， 比如说重定向过来的请求
 			if loc == "" {
 				resp.closeBody()
 				return nil, uerr(fmt.Errorf("%d response missing Location header", resp.StatusCode))
@@ -652,6 +654,8 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 				}
 			}
 			ireq := reqs[0]
+
+			// 重新构造一个Request
 			req = &Request{
 				Method:   redirectMethod,
 				Response: resp,
@@ -678,6 +682,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 
 			// Add the Referer header from the most recent
 			// request URL to the new one, if it's not https->http:
+			// 添加 跳转 Refer
 			if ref := refererForURL(reqs[len(reqs)-1].URL, req.URL); ref != "" {
 				req.Header.Set("Referer", ref)
 			}
@@ -690,11 +695,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 				return resp, nil
 			}
 
-			// Close the previous response's body. But
-			// read at least some of the body so if it's
-			// small the underlying TCP connection will be
-			// re-used. No need to check for errors: if it
-			// fails, the Transport won't reuse it anyway.
+			// 清空上次resp.Body 的数据，方便复用
 			const maxBodySlurpSize = 2 << 10
 			if resp.ContentLength == -1 || resp.ContentLength <= maxBodySlurpSize {
 				io.CopyN(ioutil.Discard, resp.Body, maxBodySlurpSize)
@@ -730,6 +731,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 
 		var shouldRedirect bool
 		redirectMethod, shouldRedirect, includeBody = redirectBehavior(req.Method, resp, reqs[0])
+		// 不需要重定向，直接返回
 		if !shouldRedirect {
 			return resp, nil
 		}
