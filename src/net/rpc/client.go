@@ -46,9 +46,9 @@ type Client struct {
 
 	mutex    sync.Mutex // protects following
 	seq      uint64
-	pending  map[uint64]*Call
-	closing  bool // user has called Close
-	shutdown bool // server has told us to stop
+	pending  map[uint64]*Call // 请求队列
+	closing  bool             // user has called Close
+	shutdown bool             // server has told us to stop
 }
 
 // A ClientCodec implements writing of RPC requests and
@@ -88,6 +88,8 @@ func (client *Client) send(call *Call) {
 	// Encode and send the request.
 	client.request.Seq = seq
 	client.request.ServiceMethod = call.ServiceMethod
+
+	// client 可以并发 发起 Request, 然后异步等待 Done
 	err := client.codec.WriteRequest(&client.request, call.Args)
 	if err != nil {
 		client.mutex.Lock()
@@ -101,6 +103,7 @@ func (client *Client) send(call *Call) {
 	}
 }
 
+// 每个客户端都会启动一个input, 用来读取异步的消息
 func (client *Client) input() {
 	var err error
 	var response Response
@@ -112,12 +115,12 @@ func (client *Client) input() {
 		}
 		seq := response.Seq
 		client.mutex.Lock()
-		call := client.pending[seq]
+		call := client.pending[seq] // 从 pending 列表中删除
 		delete(client.pending, seq)
 		client.mutex.Unlock()
 
 		switch {
-		case call == nil:
+		case call == nil: // 没有发过这个请求
 			// We've got no pending call. That usually means that
 			// WriteRequest partially failed, and call was already
 			// removed; response is a server telling us about an
@@ -127,7 +130,7 @@ func (client *Client) input() {
 			if err != nil {
 				err = errors.New("reading error body: " + err.Error())
 			}
-		case response.Error != "":
+		case response.Error != "": // 响应失败
 			// We've got an error response. Give this to the request;
 			// any subsequent requests will get the ReadResponseBody
 			// error if there is one.
@@ -137,7 +140,7 @@ func (client *Client) input() {
 				err = errors.New("reading error body: " + err.Error())
 			}
 			call.done()
-		default:
+		default: // 拿到响应结果
 			err = client.codec.ReadResponseBody(call.Reply)
 			if err != nil {
 				call.Error = errors.New("reading body " + err.Error())
@@ -190,6 +193,8 @@ func (call *Call) done() {
 // so no interlocking is required. However each half may be accessed
 // concurrently so the implementation of conn should protect against
 // concurrent reads or concurrent writes.
+
+// 默认gob 编码
 func NewClient(conn io.ReadWriteCloser) *Client {
 	encBuf := bufio.NewWriter(conn)
 	client := &gobClientCodec{conn, gob.NewDecoder(conn), gob.NewEncoder(encBuf), encBuf}
@@ -238,6 +243,7 @@ func (c *gobClientCodec) Close() error {
 
 // DialHTTP connects to an HTTP RPC server at the specified network address
 // listening on the default HTTP RPC path.
+// 使用http 转协议
 func DialHTTP(network, address string) (*Client, error) {
 	return DialHTTPPath(network, address, DefaultRPCPath)
 }
@@ -271,6 +277,7 @@ func DialHTTPPath(network, address, path string) (*Client, error) {
 }
 
 // Dial connects to an RPC server at the specified network address.
+// TCP 之接连
 func Dial(network, address string) (*Client, error) {
 	conn, err := net.Dial(network, address)
 	if err != nil {
@@ -296,6 +303,7 @@ func (client *Client) Close() error {
 // the invocation. The done channel will signal when the call is complete by returning
 // the same Call object. If done is nil, Go will allocate a new channel.
 // If non-nil, done must be buffered or Go will deliberately crash.
+// done 是调用完成信号
 func (client *Client) Go(serviceMethod string, args interface{}, reply interface{}, done chan *Call) *Call {
 	call := new(Call)
 	call.ServiceMethod = serviceMethod
@@ -318,6 +326,7 @@ func (client *Client) Go(serviceMethod string, args interface{}, reply interface
 }
 
 // Call invokes the named function, waits for it to complete, and returns its error status.
+// 阻塞调用go
 func (client *Client) Call(serviceMethod string, args interface{}, reply interface{}) error {
 	call := <-client.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
 	return call.Error
